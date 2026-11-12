@@ -319,13 +319,14 @@ pub(crate) fn parse_segment_data<'a>(
     strict: bool,
 ) -> Result<Segment<'a>> {
     let data = if let Some(len) = header.data_length {
-        // Damaged encoders can declare a data length that overruns the
-        // stream (bug_867501: a 38-byte region segment in a stream with 58
-        // bytes left) or even zero.  pdfium truncates to the remaining
-        // bytes and decodes; for a REGION segment with no declared data,
-        // pdfium decodes data-driven (the MQ decoder consumes the stream
-        // until the bitmap completes), so handing the region the rest of
-        // the stream reproduces that.
+        // Damaged encoders can declare a data length too short for the
+        // segment's own header (bug_867501: 1 byte where a region needs 18)
+        // or one that overruns the stream.  pdfium windows the region at
+        // its DECLARED length — the region header still parses from the
+        // stream and the arithmetic decoder pads EOF with 0xFF
+        // (jbig2_bit_stream.cpp:139-150), which is what produces the
+        // fixture's pixels — so the slice covers at least the header while
+        // the data window stays the declared size.
         let is_region = matches!(
             header.segment_type,
             SegmentType::ImmediateGenericRegion
@@ -335,11 +336,8 @@ pub(crate) fn parse_segment_data<'a>(
                 | SegmentType::ImmediateTextRegion
                 | SegmentType::ImmediateLosslessTextRegion
         );
-        let len = if len == 0 && is_region && !strict {
-            reader.remaining_bytes()
-        } else {
-            (len as usize).min(reader.remaining_bytes())
-        };
+        let min_len = if is_region { 18u32 } else { 0u32 };
+        let len = (len.max(min_len) as usize).min(reader.remaining_bytes());
         reader
             .read_bytes(len)
             .ok_or(ParseError::UnexpectedEof)?

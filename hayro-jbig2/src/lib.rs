@@ -366,6 +366,53 @@ struct PageSize {
     height_from_stripes: Option<u32>,
 }
 
+/// The page size for a set of segments, honouring a usable page
+/// information segment and falling back to the first region segment's
+/// dimensions when the info is missing or damaged (bug_867501: pdfium
+/// sizes the page bitmap from the region segments there).
+fn page_size_for(segments: &[Segment<'_>]) -> Result<(u32, u32)> {
+    let page_info_seg = segments
+        .iter()
+        .find(|s| s.header.segment_type == SegmentType::PageInformation)
+        .ok_or(FormatError::MissingPageInfo)?;
+    let page_info = parse_page_information(&mut Reader::new(page_info_seg.data)).unwrap_or(
+        PageInformation {
+            width: 0,
+            height: 0,
+            _x_resolution: None,
+            _y_resolution: None,
+            flags: PageFlags::default(),
+            _striping: PageStriping::default(),
+        },
+    );
+    let mut width = page_info.width;
+    let mut height = page_info.height;
+    if width == 0 || height == 0 {
+        let from_region = segments
+            .iter()
+            .find(|seg| {
+                matches!(
+                    seg.header.segment_type,
+                    SegmentType::ImmediateGenericRegion
+                        | SegmentType::ImmediateLosslessGenericRegion
+                        | SegmentType::ImmediateHalftoneRegion
+                        | SegmentType::ImmediateLosslessHalftoneRegion
+                        | SegmentType::ImmediateTextRegion
+                        | SegmentType::ImmediateLosslessTextRegion
+                )
+            })
+            .and_then(|seg| {
+                let mut reader = Reader::new(seg.data);
+                decode::parse_region_segment_info(&mut reader).ok()
+            });
+        if let Some(region) = from_region {
+            width = region.width;
+            height = region.height;
+        }
+    }
+    Ok((width, height))
+}
+
 impl PageSize {
     fn new(segments: &[Segment<'_>]) -> Result<Self> {
         let height_from_stripes = segments
@@ -515,11 +562,14 @@ fn decode_segments(
         .find(|s| s.header.segment_type == SegmentType::PageInformation)
     {
         let mut reader = Reader::new(page_info.data);
+        let size = page_size_for(segments)?;
         init_page(
             &mut reader,
             height_from_stripes,
             &mut decoder_ctx.page_state,
             &mut decoder_ctx.page_bitmap,
+            size,
+            strict,
         )?;
     } else {
         bail!(FormatError::MissingPageInfo);
@@ -546,6 +596,12 @@ fn decode_segments(
                 // It might have been decoded directly into the page.
                 page_state.page_pristine = false;
             }
+            // pdfium skips segments it cannot decode and keeps going
+            // (CJBig2_Context::processSegmentData failures don't abort the
+            // page) — damaged streams (bug_867501) carry trailing garbage
+            // segments after the regions that must not erase the painted
+            // output.
+            Err(_) if !strict => {}
             Err(e) => return Err(e),
         }
     }
@@ -561,6 +617,13 @@ fn decode_segment(
     scratch_buffers: &mut ScratchBuffers,
     strict: bool,
 ) -> Result<ControlFlow<()>> {
+    if std::env::var_os("JBIG2_DEBUG").is_some() {
+        std::eprintln!(
+            "decode_segment: type {:?} data_len {}",
+            seg.header.segment_type,
+            seg.data.len(),
+        );
+    }
     let mut reader = Reader::new(seg.data);
 
     match seg.header.segment_type {
@@ -1035,8 +1098,28 @@ fn init_page(
     height_from_stripes: Option<u32>,
     page: &mut PageState,
     bitmap: &mut Bitmap,
+    page_size: (u32, u32),
+    strict: bool,
 ) -> Result<()> {
-    let page_info = parse_page_information(reader)?;
+    // A damaged encoder can emit an empty (or truncated) page information
+    // segment (bug_867501).  pdfium recovers: the page bitmap keeps the
+    // size derived from the region segments and the default pixel stays 0
+    // (white), with the region segments painting over it.  Decode then
+    // proceeds without the page information.
+    let parsed = parse_page_information(reader);
+    let page_info = match parsed {
+        Ok(info) if info.width == page_size.0 && info.height == page_size.1 => info,
+        Ok(info) if strict => info,
+        Ok(info) if info.width != 0 && info.height != 0 => info,
+        _ => PageInformation {
+            width: page_size.0,
+            height: page_size.1,
+            _x_resolution: None,
+            _y_resolution: None,
+            flags: PageFlags::default(),
+            _striping: PageStriping::default(),
+        },
+    };
 
     // "A page's bitmap height may be declared in its page information segment
     // to be unknown (by specifying a height of 0xFFFFFFFF). In this case, the
