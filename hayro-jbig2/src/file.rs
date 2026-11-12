@@ -213,7 +213,7 @@ fn parse_segments_random_access<'a>(
 
     // Then, read all segment data.
     for header in headers {
-        segments.push(parse_segment_data(reader, header)?);
+        segments.push(parse_segment_data(reader, header, strict)?);
     }
 
     Ok(())

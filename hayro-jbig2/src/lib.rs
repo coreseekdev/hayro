@@ -22,6 +22,8 @@ use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
 use crate::arithmetic_decoder::ArithmeticDecoderContext;
+use crate::decode::parse_region_segment_info;
+use crate::page_info::{PageFlags, PageInformation, PageStriping};
 
 /// A reusable context for decoding JBIG2 images.
 #[derive(Default)]
@@ -91,7 +93,7 @@ use decode::symbol::{MAX_SYMBOLS, SymbolDictionary};
 use decode::text;
 use file::parse_file;
 use huffman_table::{HuffmanTable, StandardHuffmanTables};
-use page_info::{PageInformation, parse_page_information};
+use page_info::parse_page_information;
 use reader::Reader;
 use segment::{Segment, SegmentType};
 use sync::OnceLock;
@@ -377,8 +379,46 @@ impl PageSize {
             .find(|s| s.header.segment_type == SegmentType::PageInformation)
             .ok_or(FormatError::MissingPageInfo)?;
 
-        let mut reader = Reader::new(page_info_seg.data);
-        let page_info = parse_page_information(&mut reader)?;
+        // A damaged encoder can emit an empty (or truncated) page
+        // information segment (bug_867501).  pdfium recovers: the page
+        // bitmap is sized from the region segments instead.  Synthesise
+        // default info here; PageSize::new then picks the region-derived
+        // size when the page info's own dimensions are unusable.
+        let mut page_info = parse_page_information(&mut Reader::new(page_info_seg.data)).unwrap_or(
+            PageInformation {
+                width: 0,
+                height: 0,
+                _x_resolution: None,
+                _y_resolution: None,
+                flags: PageFlags::default(),
+                _striping: PageStriping::default(),
+            },
+        );
+        // A synthesised (damaged) page info has no usable dimensions; pdfium
+        // sizes the page from the region segments in that case.
+        if page_info.width == 0 || page_info.height == 0 {
+            let from_region = segments
+                .iter()
+                .find(|seg| {
+                    matches!(
+                        seg.header.segment_type,
+                        SegmentType::ImmediateGenericRegion
+                            | SegmentType::ImmediateLosslessGenericRegion
+                            | SegmentType::ImmediateHalftoneRegion
+                            | SegmentType::ImmediateLosslessHalftoneRegion
+                            | SegmentType::ImmediateTextRegion
+                            | SegmentType::ImmediateLosslessTextRegion
+                    )
+                })
+                .and_then(|seg| {
+                    let mut reader = Reader::new(seg.data);
+                    parse_region_segment_info(&mut reader).ok()
+                });
+            if let Some(region) = from_region {
+                page_info.width = region.width;
+                page_info.height = region.height;
+            }
+        }
 
         // "A page's bitmap height may be declared in its page information segment
         // to be unknown (by specifying a height of 0xFFFFFFFF). In this case, the

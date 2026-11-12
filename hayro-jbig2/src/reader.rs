@@ -32,6 +32,11 @@ impl<'a> Reader<'a> {
         self.data.get(self.byte_pos()..)
     }
 
+    /// The number of whole bytes left in the stream.
+    pub(crate) fn remaining_bytes(&self) -> usize {
+        self.data.len().saturating_sub(self.byte_pos())
+    }
+
     /// Read the given number of bytes.
     ///
     /// Assumes that the reader is currently byte-aligned.

@@ -304,7 +304,7 @@ pub(crate) fn parse_segment_header(reader: &mut Reader<'_>, strict: bool) -> Res
 /// Parse a complete segment (header + data).
 pub(crate) fn parse_segment<'a>(reader: &mut Reader<'a>, strict: bool) -> Result<Segment<'a>> {
     let header = parse_segment_header(reader, strict)?;
-    parse_segment_data(reader, header)
+    parse_segment_data(reader, header, strict)
 }
 
 /// Parse segment data for a previously parsed header.
@@ -316,10 +316,32 @@ pub(crate) fn parse_segment<'a>(reader: &mut Reader<'a>, strict: bool) -> Result
 pub(crate) fn parse_segment_data<'a>(
     reader: &mut Reader<'a>,
     header: SegmentHeader,
+    strict: bool,
 ) -> Result<Segment<'a>> {
     let data = if let Some(len) = header.data_length {
+        // Damaged encoders can declare a data length that overruns the
+        // stream (bug_867501: a 38-byte region segment in a stream with 58
+        // bytes left) or even zero.  pdfium truncates to the remaining
+        // bytes and decodes; for a REGION segment with no declared data,
+        // pdfium decodes data-driven (the MQ decoder consumes the stream
+        // until the bitmap completes), so handing the region the rest of
+        // the stream reproduces that.
+        let is_region = matches!(
+            header.segment_type,
+            SegmentType::ImmediateGenericRegion
+                | SegmentType::ImmediateLosslessGenericRegion
+                | SegmentType::ImmediateHalftoneRegion
+                | SegmentType::ImmediateLosslessHalftoneRegion
+                | SegmentType::ImmediateTextRegion
+                | SegmentType::ImmediateLosslessTextRegion
+        );
+        let len = if len == 0 && is_region && !strict {
+            reader.remaining_bytes()
+        } else {
+            (len as usize).min(reader.remaining_bytes())
+        };
         reader
-            .read_bytes(len as usize)
+            .read_bytes(len)
             .ok_or(ParseError::UnexpectedEof)?
     } else {
         // "In order for the decoder to correctly decode the segment, it needs to
