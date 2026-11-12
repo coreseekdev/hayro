@@ -22,7 +22,12 @@ fn main() {
         }
         fn next_line(&mut self) {}
     }
-    let page = hayro_jbig2::Page::new_embedded(&data, None, &settings).unwrap();
+    // torcular passes the PDF dict dims (1x3) the way pdfium's embedded
+    // context does.
+    let page = hayro_jbig2::Page::new_embedded_with_size(
+        &data, None, &settings, Some(1), Some(3),
+    )
+    .unwrap();
     println!("page {}x{}", page.width(), page.height());
     let mut decoder = Gray { data: vec![255; page.width() as usize * page.height() as usize], position: 0 };
     match page.decode(&mut decoder) {

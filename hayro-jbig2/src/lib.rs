@@ -508,6 +508,16 @@ impl PageSize {
                 page_info.width = region.width;
                 page_info.height = region.height;
             }
+            // pdfium's embedded context takes the PDF dict dimensions when
+            // the stream cannot size its own page (bug_867501's damaged
+            // page information); the region segments paint over that
+            // bitmap.
+            if (page_info.width == 0 || page_info.height == 0)
+                && dict_width.is_some_and(|w| w > 0)
+            {
+                page_info.width = dict_width.unwrap();
+                page_info.height = dict_height.unwrap_or(1);
+            }
         }
 
         // "A page's bitmap height may be declared in its page information segment

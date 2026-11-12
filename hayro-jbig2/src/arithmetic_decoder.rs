@@ -295,12 +295,12 @@ impl<'a> ArithmeticDecoder<'a> {
         self.data
             .get(self.base_pointer as usize)
             .copied()
-            // "The number of bytes corresponding to the coding passes is
-            // specified in the packet header. Often at that point there are
-            // more symbols to be decoded. Therefore, the decoder shall extend
-            // the input bit stream to the arithmetic coder with 0xFF bytes,
-            // as necessary, until all symbols have been decoded."
-            .unwrap_or(0xFF)
+            // openjpeg zero-fills the codeblock buffer past the declared
+            // length (t1.c: memset(cblkdatabuffer + cblk_len, 0, EXTRA)),
+            // so EOF reads 0x00 — not the 0xFF the JBIG2 text suggests.
+            // The padding value changes the decoded bits after the data
+            // runs out (bug_867501: pdfium row-1 black vs hayro white).
+            .unwrap_or(0x00)
     }
 
     #[inline(always)]
@@ -308,7 +308,7 @@ impl<'a> ArithmeticDecoder<'a> {
         self.data
             .get((self.base_pointer + 1) as usize)
             .copied()
-            .unwrap_or(0xFF)
+            .unwrap_or(0x00)
     }
 }
 
