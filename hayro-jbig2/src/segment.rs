@@ -319,8 +319,29 @@ pub(crate) fn parse_segment_data<'a>(
     strict: bool,
 ) -> Result<Segment<'a>> {
     let data = if let Some(len) = header.data_length {
+        // bug_867501: an immediate region segment declaring data length 0
+        // is damaged (a region needs ≥ 18 bytes of header alone).  pdfium
+        // recovers by reading the region info and arithmetic data from the
+        // remaining stream (its bit stream spans the whole embedded data).
+        // A nonzero length that merely overruns the stream keeps the
+        // upstream drop behaviour (upstream's truncated_segment test pins
+        // it).
+        let is_region = matches!(
+            header.segment_type,
+            SegmentType::ImmediateGenericRegion
+                | SegmentType::ImmediateLosslessGenericRegion
+                | SegmentType::ImmediateHalftoneRegion
+                | SegmentType::ImmediateLosslessHalftoneRegion
+                | SegmentType::ImmediateTextRegion
+                | SegmentType::ImmediateLosslessTextRegion
+        );
+        let len = if len == 0 && is_region && !strict {
+            reader.remaining_bytes()
+        } else {
+            len as usize
+        };
         reader
-            .read_bytes(len as usize)
+            .read_bytes(len)
             .ok_or(ParseError::UnexpectedEof)?
     } else {
         // "In order for the decoder to correctly decode the segment, it needs to
