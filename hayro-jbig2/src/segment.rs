@@ -319,27 +319,8 @@ pub(crate) fn parse_segment_data<'a>(
     strict: bool,
 ) -> Result<Segment<'a>> {
     let data = if let Some(len) = header.data_length {
-        // Damaged encoders can declare a data length too short for the
-        // segment's own header (bug_867501: 1 byte where a region needs 18)
-        // or one that overruns the stream.  pdfium windows the region at
-        // its DECLARED length — the region header still parses from the
-        // stream and the arithmetic decoder pads EOF with 0xFF
-        // (jbig2_bit_stream.cpp:139-150), which is what produces the
-        // fixture's pixels — so the slice covers at least the header while
-        // the data window stays the declared size.
-        let is_region = matches!(
-            header.segment_type,
-            SegmentType::ImmediateGenericRegion
-                | SegmentType::ImmediateLosslessGenericRegion
-                | SegmentType::ImmediateHalftoneRegion
-                | SegmentType::ImmediateLosslessHalftoneRegion
-                | SegmentType::ImmediateTextRegion
-                | SegmentType::ImmediateLosslessTextRegion
-        );
-        let min_len = if is_region { 18u32 } else { 0u32 };
-        let len = (len.max(min_len) as usize).min(reader.remaining_bytes());
         reader
-            .read_bytes(len)
+            .read_bytes(len as usize)
             .ok_or(ParseError::UnexpectedEof)?
     } else {
         // "In order for the decoder to correctly decode the segment, it needs to

@@ -213,6 +213,8 @@ impl<'a> File<'a> {
         let page = self.pages.get(index)?;
 
         Some(Page {
+            dict_width: None,
+            dict_height: None,
             number: page.number,
             segments: PageSegments::Borrowed(&page.segments),
             globals: self.globals.as_ref().map(GlobalsRef::Lazy),
@@ -266,6 +268,8 @@ impl Globals {
 
 /// A JBIG2 page, from a [`File`] or embedded in another format.
 pub struct Page<'a> {
+    dict_width: Option<u32>,
+    dict_height: Option<u32>,
     number: u32,
     segments: PageSegments<'a>,
     globals: Option<GlobalsRef<'a>>,
@@ -290,19 +294,37 @@ impl<'a> Page<'a> {
         globals: Option<&'a Globals>,
         settings: &DecodeSettings,
     ) -> Result<Self> {
+        Self::new_embedded_with_size(data, globals, settings, None, None)
+    }
+
+    /// Like [`new_embedded`], but with the embedding document's declared
+    /// image dimensions.  pdfium's embedded context takes the PDF dict
+    /// dimensions the same way, which recovers the page size when the
+    /// stream's PageInformation segment is missing or damaged
+    /// (bug_867501: pdfium renders the region into a bitmap sized from
+    /// the PDF dict).
+    pub fn new_embedded_with_size(
+        data: &'a [u8],
+        globals: Option<&'a Globals>,
+        settings: &DecodeSettings,
+        dict_width: Option<u32>,
+        dict_height: Option<u32>,
+    ) -> Result<Self> {
         let mut segments = Vec::new();
         let mut reader = Reader::new(data);
         parse_segments_sequential(&mut reader, &mut segments, settings.strict)?;
 
         segments.sort_by_key(|seg| seg.header.segment_number);
 
-        let size = PageSize::new(&segments)?;
+        let size = PageSize::new_with_dict(&segments, dict_width, dict_height)?;
         let number = segments
             .iter()
             .find(|seg| seg.header.segment_type == SegmentType::PageInformation)
             .map_or(1, |seg| seg.header.page_association);
 
         Ok(Self {
+            dict_width,
+            dict_height,
             number,
             segments: PageSegments::Owned(segments),
             globals: globals.map(GlobalsRef::Decoded),
@@ -349,6 +371,8 @@ impl<'a> Page<'a> {
             segments,
             globals,
             self.size.height_from_stripes,
+            self.dict_width,
+            self.dict_height,
             self.strict,
             ctx,
         )?;
@@ -370,7 +394,11 @@ struct PageSize {
 /// information segment and falling back to the first region segment's
 /// dimensions when the info is missing or damaged (bug_867501: pdfium
 /// sizes the page bitmap from the region segments there).
-fn page_size_for(segments: &[Segment<'_>]) -> Result<(u32, u32)> {
+fn page_size_for(
+    segments: &[Segment<'_>],
+    dict_width: Option<u32>,
+    dict_height: Option<u32>,
+) -> Result<(u32, u32)> {
     let page_info_seg = segments
         .iter()
         .find(|s| s.header.segment_type == SegmentType::PageInformation)
@@ -409,12 +437,27 @@ fn page_size_for(segments: &[Segment<'_>]) -> Result<(u32, u32)> {
             width = region.width;
             height = region.height;
         }
+        // pdfium's embedded context takes the PDF dict dimensions when the
+        // stream cannot size its own page (bug_867501's damaged page
+        // information); the region segments paint over that bitmap.
+        if (width == 0 || height == 0) && dict_width.is_some_and(|w| w > 0) {
+            width = dict_width.unwrap();
+            height = dict_height.unwrap_or(1);
+        }
     }
     Ok((width, height))
 }
 
 impl PageSize {
     fn new(segments: &[Segment<'_>]) -> Result<Self> {
+        Self::new_with_dict(segments, None, None)
+    }
+
+    fn new_with_dict(
+        segments: &[Segment<'_>],
+        dict_width: Option<u32>,
+        dict_height: Option<u32>,
+    ) -> Result<Self> {
         let height_from_stripes = segments
             .iter()
             .filter(|seg| seg.header.segment_type == SegmentType::EndOfStripe)
@@ -549,10 +592,13 @@ fn emit_bitmap<D: Decoder>(bitmap: &Bitmap, decoder: &mut D) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_segments(
     segments: &[Segment<'_>],
     globals: Option<&Globals>,
     height_from_stripes: Option<u32>,
+    dict_width: Option<u32>,
+    dict_height: Option<u32>,
     strict: bool,
     decoder_ctx: &mut DecoderContext,
 ) -> Result<()> {
@@ -562,7 +608,7 @@ fn decode_segments(
         .find(|s| s.header.segment_type == SegmentType::PageInformation)
     {
         let mut reader = Reader::new(page_info.data);
-        let size = page_size_for(segments)?;
+        let size = page_size_for(segments, dict_width, dict_height)?;
         init_page(
             &mut reader,
             height_from_stripes,
@@ -617,13 +663,6 @@ fn decode_segment(
     scratch_buffers: &mut ScratchBuffers,
     strict: bool,
 ) -> Result<ControlFlow<()>> {
-    if std::env::var_os("JBIG2_DEBUG").is_some() {
-        std::eprintln!(
-            "decode_segment: type {:?} data_len {}",
-            seg.header.segment_type,
-            seg.data.len(),
-        );
-    }
     let mut reader = Reader::new(seg.data);
 
     match seg.header.segment_type {
