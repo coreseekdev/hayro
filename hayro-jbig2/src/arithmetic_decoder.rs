@@ -295,12 +295,12 @@ impl<'a> ArithmeticDecoder<'a> {
         self.data
             .get(self.base_pointer as usize)
             .copied()
-            // openjpeg zero-fills the codeblock buffer past the declared
-            // length (t1.c: memset(cblkdatabuffer + cblk_len, 0, EXTRA)),
-            // so EOF reads 0x00 — not the 0xFF the JBIG2 text suggests.
-            // The padding value changes the decoded bits after the data
-            // runs out (bug_867501: pdfium row-1 black vs hayro white).
-            .unwrap_or(0x00)
+            // pdfium's JBIG2 bit stream reads 0xFF past the end
+            // (jbig2_bit_stream.cpp:146-150: getCurByte_arith/getNextByte_arith
+            // return 0xFF out of bounds) — 0xFF followed by 0xFF puts the MQ
+            // decoder in its end-of-stream stall, which is exactly what the
+            // reference does.
+            .unwrap_or(0xFF)
     }
 
     #[inline(always)]
@@ -308,7 +308,7 @@ impl<'a> ArithmeticDecoder<'a> {
         self.data
             .get((self.base_pointer + 1) as usize)
             .copied()
-            .unwrap_or(0x00)
+            .unwrap_or(0xFF)
     }
 }
 
