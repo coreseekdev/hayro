@@ -89,7 +89,7 @@ pub use error::{
     ColorError, DecodeError, DecodingError, FormatError, MarkerError, Result, TileError,
     ValidationError,
 };
-pub use j2c::{ComponentData, DecoderContext};
+pub use j2c::{trace_53_for_example, ComponentData, DecoderContext};
 pub use jp2::DecodedImage;
 
 #[cfg(feature = "image")]

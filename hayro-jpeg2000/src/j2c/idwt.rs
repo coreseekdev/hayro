@@ -697,3 +697,22 @@ fn scale<S: Simd>(simd: S, samples: &mut [f32], factor: f32) {
         *sample *= factor;
     }
 }
+
+/// Dumps the 5/3 reconstruction through the crate's own lifting machinery
+/// (test/example harness for the cas=0/cas=1 comparison against pdfium's
+/// patched dwt.c).  Not part of the public decode surface.
+pub(crate) fn trace_53(low_first: bool, low: &[f32], high: &[f32]) -> Vec<f32> {
+    let mut out = Vec::new();
+    dispatch!(Level::new(), simd => {
+        let mut filter = HorizontalFilter::new(
+            WaveletTransform::Reversible53,
+            low_first,
+            low.len(),
+            high.len(),
+        );
+        let mut row = vec![0.0f32; low.len() + high.len()];
+        filter.filter_rows(simd, low, high, std::iter::once(&mut row[..]));
+        out = row;
+    });
+    out
+}

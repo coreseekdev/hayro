@@ -113,3 +113,8 @@ pub(crate) fn parse_raw<'a>(
         data: code_stream_data,
     })
 }
+
+/// Example/test harness hook (see examples/idwt53_trace.rs).
+pub fn trace_53_for_example(low_first: bool, low: &[f32], high: &[f32]) -> Vec<f32> {
+    idwt::trace_53(low_first, low, high)
+}
