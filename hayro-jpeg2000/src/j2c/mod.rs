@@ -118,3 +118,8 @@ pub(crate) fn parse_raw<'a>(
 pub fn trace_53_for_example(low_first: bool, low: &[f32], high: &[f32]) -> Vec<f32> {
     idwt::trace_53(low_first, low, high)
 }
+
+/// Example/test harness hook (see examples/idwt53_trace.rs).
+pub fn openjpeg_idwt53_h_for_example(row: &[f32], sn: usize, cas: u32) -> Vec<f32> {
+    idwt::openjpeg_idwt53_h(row, sn, cas)
+}

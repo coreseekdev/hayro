@@ -716,3 +716,72 @@ pub(crate) fn trace_53(low_first: bool, low: &[f32], high: &[f32]) -> Vec<f32> {
     });
     out
 }
+
+/// The openjpeg (pdfium-patched dwt.c) horizontal 5/3 synthesis, translated
+/// line-by-line from `opj_idwt53_h_cas0` / `opj_idwt53_h_cas1` (scalar
+/// paths).  Used by the trace example to pin the semantic difference
+/// against the crate's own lifting.
+///
+/// `row` is the tile row laid out the way openjpeg's caller lays it out:
+/// cas=0 → `[low (sn)][high (dn)]`, cas=1 → `[high (dn)][low (sn)]`.
+/// Returns the reconstructed row of `sn + dn` samples.
+pub fn openjpeg_idwt53_h(row: &[f32], sn: usize, cas: u32) -> Vec<f32> {
+    let len = row.len();
+    let mut tmp = vec![0.0f32; len];
+    // The C operates on integers; these signals are small so the f32 here is
+    // exact.  Use i32 arithmetic to mirror the C exactly.
+    let to_i = |v: f32| v as i32;
+    let to_f = |v: i32| v as f32;
+    if cas == 0 {
+        let in_even = &row[0..sn]; // low
+        let in_odd = &row[sn..]; // high
+        let mut s1n = to_i(in_even[0]);
+        let mut d1n = to_i(in_odd[0]);
+        let mut s0n = s1n - ((d1n + 1) >> 1);
+        let (mut i, mut j) = (0usize, 1usize);
+        while i + 3 < len {
+            let d1c = d1n;
+            let s0c = s0n;
+            s1n = to_i(in_even[j]);
+            d1n = to_i(in_odd[j]);
+            s0n = s1n - ((d1c + d1n + 2) >> 2);
+            tmp[i] = to_f(s0c);
+            tmp[i + 1] = to_f(d1c + ((s0c + s0n) >> 1));
+            i += 2;
+            j += 1;
+        }
+        tmp[i] = to_f(s0n);
+        if len & 1 == 1 {
+            tmp[len - 1] = to_f(to_i(in_even[(len - 1) / 2]) - ((d1n + 1) >> 1));
+            tmp[len - 2] = to_f(d1n + ((s0n + to_i(tmp[len - 1])) >> 1));
+        } else {
+            tmp[len - 1] = to_f(d1n + s0n);
+        }
+    } else {
+        let in_even = &row[sn..]; // low band (second half for cas=1)
+        let in_odd = &row[0..sn]; // high band (first half)
+        let mut s1 = to_i(in_even[1]);
+        let mut dc = to_i(in_odd[0]) - ((to_i(in_even[0]) + s1 + 2) >> 2);
+        tmp[0] = to_f(to_i(in_even[0]) + dc);
+        let (mut i, mut j) = (1usize, 1usize);
+        while i < (len - 2 - usize::from(len & 1 == 0)) {
+            let s2 = to_i(in_even[j + 1]);
+            let dn = to_i(in_odd[j]) - ((s1 + s2 + 2) >> 2);
+            tmp[i] = to_f(dc);
+            tmp[i + 1] = to_f(s1 + ((dn + dc) >> 1));
+            dc = dn;
+            s1 = s2;
+            i += 2;
+            j += 1;
+        }
+        tmp[i] = to_f(dc);
+        if len & 1 == 0 {
+            let dn = to_i(in_odd[len / 2 - 1]) - ((s1 + 1) >> 1);
+            tmp[len - 2] = to_f(s1 + ((dn + dc) >> 1));
+            tmp[len - 1] = to_f(dn);
+        } else {
+            tmp[len - 1] = to_f(s1 + dc);
+        }
+    }
+    tmp
+}

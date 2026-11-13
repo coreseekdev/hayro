@@ -14,5 +14,18 @@ fn main() {
         println!(
             "case {i}: low_first={low_first} low={low:?} high={high:?} -> {out:?}"
         );
+        // The same bands through the openjpeg-semantics reference: cas=0
+        // rows are [low][high], cas=1 rows are [high][low].
+        let sn = low.len();
+        let mut row = Vec::with_capacity(sn + high.len());
+        if low_first {
+            row.extend_from_slice(&low);
+            row.extend_from_slice(&high);
+        } else {
+            row.extend_from_slice(&high);
+            row.extend_from_slice(&low);
+        }
+        let oj = hayro_jpeg2000::openjpeg_idwt53_h_for_example(&row, sn, u32::from(!low_first));
+        println!("case {i}: openjpeg -> {oj:?}");
     }
 }
